@@ -183,6 +183,7 @@ py_library_providing_imports_info(
         "experimental/pjit.py",
         "experimental/multihost_utils.py",
         "experimental/shard_map.py",
+        "experimental/shard_like.py",
         # until checkify is moved out of experimental
         "experimental/checkify.py",
         "experimental/compilation_cache/compilation_cache.py",

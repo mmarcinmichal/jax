@@ -1188,6 +1188,45 @@ def is_supported_reduced_sublanes_retile(
   )
 
 
+def copy_one_sublane(
+    src_vreg: ir.Value,
+    src_sl_idx: int,
+    dst_vreg: ir.Value | None,
+    dst_sl_idx: int,
+    hw_generation: int,
+) -> ir.Value:
+  """Copy one sublane from a vreg to another vreg.
+
+  Arguments:
+    src_vreg: The source vreg to copy a sublane from.
+    src_sl_idx: The sublane index in src_vreg to copy.
+    dst_vreg: The destination vreg to copy a sublane to.
+    dst_sl_idx: The sublane index in dst_vreg to paste.
+    hw_generation: The generation of a target hardware.
+
+  Returns:
+    A new dst_vreg with the copied sublane. When dst_vreg is None, it will
+    broadcast the sublane from src_vreg to a new vreg.
+  """
+  if not dst_vreg:
+    return tpu.GatherOp(
+        src_vreg.type,
+        src_vreg,
+        ir.DenseI32ArrayAttr.get([src_sl_idx] * 8),
+        0,
+    )
+  src_vreg_rot = tpu.RotateOp(
+      src_vreg, amount=(dst_sl_idx - src_sl_idx + 8) % 8, dimension=0
+  )
+  bounds = RectangularVRegBounds(
+      TargetTuple(
+          slice(dst_sl_idx, dst_sl_idx + 1), slice(0, TARGET_SHAPE.lanes)
+      )
+  )
+  mask = bounds.get_vector_mask(hw_generation)
+  return arith.SelectOp(mask, src_vreg_rot, dst_vreg)
+
+
 # TODO(apaszke): Test this function properly
 def relayout(
     v: ir.Value, src: VectorLayout, dst: VectorLayout, hw_generation: int
@@ -1229,35 +1268,41 @@ def relayout(
     if candidate.equivalent_to(src, vty.shape):
       src = candidate
 
+  # TODO(b/306692696) Generalize relayout from tiling (m, 128) to (8, 128).
   # Handle retiling from (1, 128) to (8, 128) for 32-bit data.
   if (
       src.implicit_dim is None
       and dst.implicit_dim is None
       and src.bitwidth == 32
       and src.offsets == (0, 0)
-      and (dst.offsets == (REPLICATED, 0) or dst.offsets == (0, 0))
+      and (
+          dst.offsets[0] == 0
+          or (dst.offsets[0] == REPLICATED and src_tiles.shape[-2] == 1)
+      )
+      and dst.offsets[1] == 0
       and src.tiling == (1, 128)
       and dst.tiling == (8, 128)
-      and src_tiles.shape[-2] == 1
   ):
-    src_tiles_retiled = np.empty(
-        dst.tile_array_shape(vty.shape), dtype=object
-    )
-    for *batch_idx, dst_col in np.ndindex(
-        src_tiles_retiled.shape[:-2] + src_tiles_retiled.shape[-1:]
-    ):
-      src_col = dst_col // 8
-      slane_idx = dst_col % 8
-      gather_indices = ir.DenseI32ArrayAttr.get([slane_idx] * 8)
-      src_tile = src_tiles[(*batch_idx, 0, src_col)]
-      src_tiles_retiled[(*batch_idx, slice(None), dst_col)] = tpu.GatherOp(
-          src_tile.type, src_tile, gather_indices, 0
-      )
+    if dst.offsets[0] == REPLICATED:
+      pass
+    src_tiles_retiled = np.empty(dst.tile_array_shape(vty.shape), dtype=object)
+    for *batch_idx, dst_row, dst_col in np.ndindex(src_tiles_retiled.shape):
+      for dst_sl_idx in range(8):
+        src_row = 8 * dst_row + dst_sl_idx
+        if src_row >= src_tiles.shape[-2]:
+          break
+        src_col = dst_col // 8
+        src_sl_idx = dst_col % 8
+        src_tile = src_tiles[(*batch_idx, src_row, src_col)]
+        dst_tile = src_tiles_retiled[(*batch_idx, dst_row, dst_col)]
+        src_tiles_retiled[(*batch_idx, dst_row, dst_col)] = copy_one_sublane(
+            src_tile, src_sl_idx, dst_tile, dst_sl_idx, hw_generation
+        )
     src = dst
     src_tiles = src_tiles_retiled
 
   # Handle retiling from (2, 128) to (8, 128) for 32-bit data.
-  if (
+  elif (
       src.implicit_dim is None
       and dst.implicit_dim is None
       and src.bitwidth == 32
@@ -1292,7 +1337,7 @@ def relayout(
   # TODO(apaszke): Generalize retiling to general 16-bit types (might need to
   # use a different unpacking op).
   # (8,128) -> (16,128) tiling change for packed 16-bit types.
-  if (
+  elif (
       src.implicit_dim is None
       and dst.implicit_dim is None
       and ir.BF16Type.isinstance(vty.element_type)
@@ -1319,7 +1364,7 @@ def relayout(
     src_tiles = src_tiles_retiled
 
   # (8, 128) -> (32, 128) for int8. Useful for preparing data for matmuls.
-  if (
+  elif (
       src.implicit_dim is None
       and dst.implicit_dim is None
       and ir.IntegerType.get_signless(8) == vty.element_type
@@ -1348,7 +1393,7 @@ def relayout(
     src = new_src
     src_tiles = src_tiles_retiled
 
-  if is_supported_reduced_sublanes_retile(src, dst):
+  elif is_supported_reduced_sublanes_retile(src, dst):
     src_tiles = retile_to_reduced_sublanes(
         value_shape=vty.shape,
         src_layout=src,
@@ -2759,6 +2804,18 @@ def _vector_shape_cast_rule(ctx: RewriteContext, op: vector.ShapeCastOp,  # pyli
       and dst_ty.shape[-2] % layout_out.tiling[-2] == 0
       and src_ty.shape[-1] % layout_in.tiling[-1] == 0
   ):  # n x (m * 128) -> n x m x 128.
+    no_op = True
+  elif (
+      layout_in.implicit_dim is None
+      and layout_out.implicit_dim is None
+      and layout_out.offsets == layout_in.offsets == (0, 0)
+      and layout_in.has_natural_topology
+      and layout_out.tiling == (1, TARGET_SHAPE.lanes)
+      and dst_ty.shape[-1] != src_ty.shape[-1]
+      and src_ty.shape[-1] == TARGET_SHAPE.lanes
+      and src_ty.shape[-2] % layout_out.tiling[-2] == 0
+      and dst_ty.shape[-1] % layout_in.tiling[-1] == 0
+  ):  #  n x m x 128 -> n x (m * 128)
     no_op = True
 
   src_vregs = disassemble(layout_in, op.source)

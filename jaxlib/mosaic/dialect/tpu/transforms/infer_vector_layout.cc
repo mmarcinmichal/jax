@@ -1016,24 +1016,36 @@ class VectorLayoutInferer {
         if (src_ty.getElementTypeBitWidth() != kNativeBitwidth) {
           NYI("Shapecast along lane dimension when bitwidth is not 32");
         }
-        // Inferring in_layout to have tiling (1, 128) triggers any necessary
-        // relayout before shapecast.
-        setInLayout(op,
-                    {VectorLayout(layout.bitwidth(), layout.offsets(),
-                                  {1, target_shape_[1]}, ImplicitDim::kNone)});
-        //  If the input has tiling (1, target_shape_[1]) and the last two dims
-        //  of result shape are [n * target_shape_[0], target_shape_[1]], the
-        //  reshape becomes a no-op if only we change the tiling to match
-        //  target_shape_. For example, reshaping to layouts like the following
-        //  will not require any data movement:
-        //  8x8x128 (1, 128)
-        //  4x16x128 (1, 128)
-        //  8x8x128 (8, 128)
-        //  ....
+        // If the input has tiling (1, target_shape_[1]) and the last two dims
+        // of result shape are [n * target_shape_[0], target_shape_[1]], the
+        // reshape becomes a no-op if only we change the tiling to match
+        // target_shape_.
+        // n x (m * 128) -> n x m x 128.
         if (res_shape[res_shape.size() - 1] == target_shape_[1] &&
             res_shape[res_shape.size() - 2] % target_shape_[0] == 0) {
-          setOutLayout(op, VectorLayout(layout.bitwidth(), layout.offsets(),
-                                        default_tiling_, ImplicitDim::kNone));
+          // Inferring in_layout to have tiling (1, 128) triggers any necessary
+          // relayout before shapecast.
+          setLayout(op,
+                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                                 {1, target_shape_[1]}, ImplicitDim::kNone),
+                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                                 default_tiling_, ImplicitDim::kNone));
+          return success();
+        }
+
+        // If the last two dims of input shape are [n * target_shape_[0],
+        // target_shape_[1]] and the last dim of result shape is a multiple of
+        // taget_shape_[1], we can infer the tiling of layout_out to be (1,
+        // target_shape_[1]) to make the reshape become a no-op.
+        // n x m x 128 -> n x (m * 128).
+        if (src_shape[src_shape.size() - 1] == target_shape_[1] &&
+            src_shape[src_shape.size() - 2] % target_shape_[0] == 0 &&
+            res_shape[res_shape.size() - 1] % target_shape_[1] == 0) {
+          setLayout(op,
+                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                                 default_tiling_, ImplicitDim::kNone),
+                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                                 {1, target_shape_[1]}, ImplicitDim::kNone));
           return success();
         }
 

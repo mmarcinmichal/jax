@@ -301,14 +301,10 @@ class CompilationCacheTest(jtu.JaxTestCase):
         files_in_cache = len(os.listdir(tmpdir))
         self.assertEqual(files_in_cache, 1)
 
-  # TODO(b/293308239) Remove the parameters after the new compilation cache key
-  # implementation is enabled.
-  @parameterized.parameters(True, False)
-  def test_cache_saving_metric(self, use_original):
+  def test_cache_saving_metric(self):
     with (
       tempfile.TemporaryDirectory() as tmpdir,
       config.persistent_cache_min_compile_time_secs(2),
-      config.use_original_compilation_cache_key_generation(use_original),
     ):
       cc.initialize_cache(tmpdir)
 
@@ -326,16 +322,8 @@ class CompilationCacheTest(jtu.JaxTestCase):
         jit(lambda x: x + 1)(1)
         self.assertNotIn(
             "/jax/compilation_cache/cache_retrieval_time_sec", durations)
-        if use_original:
-          self.assertNotIn(
-              "/jax/compilation_cache/original_compile_time_saved_sec",
-              durations)
-        else:
-          # TODO(b/293308239) Remove this skipping when pjrt c api is supported.
-          if xla_bridge.using_pjrt_c_api():
-            raise SkipTest("PJRT C API not supported yet.")
-          self.assertNotIn(
-              "/jax/compilation_cache/compile_time_saved_sec", durations)
+        self.assertNotIn(
+            "/jax/compilation_cache/compile_time_saved_sec", durations)
 
         # Mock time to create a long compilation time, metrics incremented with
         # a cache hit.
@@ -345,16 +333,8 @@ class CompilationCacheTest(jtu.JaxTestCase):
         jit(lambda x: x + 2)(1)
         self.assertGreater(
             durations["/jax/compilation_cache/cache_retrieval_time_sec"], 0)
-        if use_original:
-          self.assertGreater(
-              durations[
-                  "/jax/compilation_cache/original_compile_time_saved_sec"
-              ], 0)
-        else:
-          if xla_bridge.using_pjrt_c_api():
-            raise SkipTest("PJRT C API not supported yet.")
-          self.assertGreater(
-              durations["/jax/compilation_cache/compile_time_saved_sec"], 0)
+        self.assertGreater(
+            durations["/jax/compilation_cache/compile_time_saved_sec"], 0)
 
   def test_task_using_cache_metric(self):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -404,15 +384,11 @@ class CompilationCacheTest(jtu.JaxTestCase):
         - previous_counts["/jax/compilation_cache/cache_misses"],
         2)
 
-  # TODO(b/293308239) Remove the parameters after the new compilation cache key
-  # implementation is enabled.
-  @parameterized.parameters(True, False)
-  def test_cache_hits_metric(self, use_original):
+  def test_cache_hits_metric(self):
     previous_counts = Counter(_counts)
     with (
       tempfile.TemporaryDirectory() as tmpdir,
       config.persistent_cache_min_compile_time_secs(2),
-      config.use_original_compilation_cache_key_generation(use_original),
     ):
       cc.initialize_cache(tmpdir)
 
@@ -421,19 +397,10 @@ class CompilationCacheTest(jtu.JaxTestCase):
         jit(lambda x: x + 1)(1)
       jit(lambda x: x + 1)(1)
 
-    if use_original:
-      self.assertEqual(
-          _counts["/jax/compilation_cache/cache_hits_original"]
-          - previous_counts["/jax/compilation_cache/cache_hits_original"],
-          1)
-    else:
-      # TODO(b/293308239) Remove this skipping when pjrt c api is supported.
-      if xla_bridge.using_pjrt_c_api():
-        raise SkipTest("PJRT C API not supported yet.")
-      self.assertEqual(
-          _counts["/jax/compilation_cache/cache_hits"]
-          - previous_counts["/jax/compilation_cache/cache_hits"],
-          1)
+    self.assertEqual(
+        _counts["/jax/compilation_cache/cache_hits"]
+        - previous_counts["/jax/compilation_cache/cache_hits"],
+        1)
 
 if __name__ == "__main__":
   absltest.main(testLoader=jtu.JaxTestLoader())

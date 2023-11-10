@@ -22,4 +22,5 @@ from .cluster import ClusterEnv
 # available one from the list will be picked.
 from .ompi_cluster import OmpiCluster
 from .slurm_cluster import SlurmCluster
+from .cloud_tpu_cluster import MultisliceTpuCluster
 from .cloud_tpu_cluster import TpuCluster

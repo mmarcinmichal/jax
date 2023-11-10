@@ -43,11 +43,29 @@ def get_metadata(key):
     raise RuntimeError(f"Getting metadata['{key}'] failed for 6 tries")
   return api_resp.text
 
+def get_tpu_env_value(key):
+  def get_tpu_env_value_from_metadata(key):
+    tpu_env_data = get_metadata('tpu-env')
+    key_value_pairs = tpu_env_data.split('\n')
+    for key_value_pair in key_value_pairs:
+      # Typical line is <MEGASCALE_NUM_SLICES: '2'>
+      if ':' in key_value_pair:
+        key_value_split = key_value_pair.split(':')
+        row_key, value = key_value_split[0].strip(), key_value_split[1]
+        if row_key == key:
+          return value.strip().strip("'")
+    return None
+
+  value = os.environ.get(key, None)
+  return value if value is not None else get_tpu_env_value_from_metadata(key)
+
+def isMultisliceEnv():
+  return get_tpu_env_value('MEGASCALE_COORDINATOR_ADDRESS') is not None
 
 class TpuCluster(clusters.ClusterEnv):
   @classmethod
   def is_env_present(cls) -> bool:
-    return running_in_cloud_tpu_vm
+    return running_in_cloud_tpu_vm and not isMultisliceEnv()
 
   @classmethod
   def get_coordinator_address(cls) -> str:
@@ -72,3 +90,33 @@ class TpuCluster(clusters.ClusterEnv):
   @staticmethod
   def _get_worker_endpoints() -> str:
     return get_metadata('worker-network-endpoints').split(',')
+
+
+class MultisliceTpuCluster(clusters.ClusterEnv):
+  @classmethod
+  def is_env_present(cls) -> bool:
+    return running_in_cloud_tpu_vm and isMultisliceEnv()
+
+  @classmethod
+  def get_coordinator_address(cls) -> str:
+    coordinator_address = get_tpu_env_value('MEGASCALE_COORDINATOR_ADDRESS')
+    # Use a different port for the jax coordinator than the MXLA coordinator.
+    coordinator_address = coordinator_address.split(':')[0] + ':8476'
+    return coordinator_address
+
+  @classmethod
+  def get_process_count(cls) -> int:
+    return xla_bridge.process_count()
+
+  @classmethod
+  def get_process_id(cls) -> int:
+    slice_id = int(get_tpu_env_value('MEGASCALE_SLICE_ID'))
+    num_total_processes = cls.get_process_count()
+    num_slices = int(get_tpu_env_value('MEGASCALE_NUM_SLICES'))
+    num_processes_per_slice = num_total_processes / num_slices
+    process_id = int(get_metadata('agent-worker-number')) + int(num_processes_per_slice * slice_id)
+    return process_id
+
+  @classmethod
+  def get_local_process_id(cls) -> Optional[int]:
+    return None

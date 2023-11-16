@@ -3084,9 +3084,10 @@ Value selectTilesFromRotatedRowVregs(
 
   const IntegerType i1 = builder.getI1Type();
   const auto mask_vreg_ty =
-      dst_layout.packing() == 2
-          ? VectorType::get(
-                ArrayRef<int64_t>{target_shape[0], target_shape[1], 2}, i1)
+      dst_layout.packing() > 1
+          ? VectorType::get(ArrayRef<int64_t>{target_shape[0], target_shape[1],
+                                              dst_layout.packing()},
+                            i1)
           : VectorType::get(target_shape, i1);
 
   auto boundIdxConst = std::bind(IdxConst, std::placeholders::_1, builder,
@@ -3461,12 +3462,10 @@ FailureOr<Value> relayout(OpBuilder &builder, Value v, VectorLayout src,
   }
   // TODO(b/265133506): Generalize retiling to general 16-bit types (might
   // need to use a different unpacking op).
-  VectorType vreg_f32 = VectorType::get(target_shape, builder.getF32Type());
   // (8,128) -> (16,128) tiling change for packed 16-bit types.
   if (src.implicit_dim() == VectorLayout::ImplicitDim::kNone &&
       dst.implicit_dim() == VectorLayout::ImplicitDim::kNone &&
-      vty.getElementType() == builder.getBF16Type() &&
-      src.offsets() == dst.offsets() &&
+      vty.getElementTypeBitWidth() == 16 && src.offsets() == dst.offsets() &&
       src.tiling() == std::array<int64_t, 2>{8, 128} &&
       dst.tiling() == std::array<int64_t, 2>{16, 128}) {
     const VectorLayout new_src(src.bitwidth(), src.offsets(), dst.tiling());
@@ -3483,10 +3482,15 @@ FailureOr<Value> relayout(OpBuilder &builder, Value v, VectorLayout src,
       }
       Value src_row2 = src_tiles(src_idx);
       const int vreg_part = idx[idx.size() - 1] % 2;
+
+      VectorType vreg_x32 =
+          vty.getElementType().isSignlessInteger()
+              ? VectorType::get(target_shape, builder.getI32Type())
+              : VectorType::get(target_shape, builder.getF32Type());
       auto half_row1 = builder.create<tpu::UnpackSubelementsOp>(
-          v.getLoc(), vreg_f32, src_row1, vreg_part);
+          v.getLoc(), vreg_x32, src_row1, vreg_part);
       auto half_row2 = builder.create<tpu::UnpackSubelementsOp>(
-          v.getLoc(), vreg_f32, src_row2, vreg_part);
+          v.getLoc(), vreg_x32, src_row2, vreg_part);
       *tile = builder.create<tpu::PackSubelementsOp>(
           v.getLoc(), src_row1.getType(), ValueRange{half_row1, half_row2});
     });
@@ -3633,8 +3637,14 @@ FailureOr<Value> relayout(OpBuilder &builder, Value v, VectorLayout src,
       if (src_tiles.dimensions()[src_tiles.num_dimensions() - 1] > 1) {
         auto boundIdxConst =
             std::bind(IdxConst, std::placeholders::_1, builder, v.getLoc());
+        VectorType mask_vreg_ty =
+            packing > 1
+                ? VectorType::get(ArrayRef<int64_t>{target_shape[0],
+                                                    target_shape[1], packing},
+                                  builder.getI1Type())
+                : VectorType::get(target_shape, builder.getI1Type());
         maybe_create_mask = builder.create<tpu::CreateMaskOp>(
-            v.getLoc(), VectorType::get(target_shape, builder.getI1Type()),
+            v.getLoc(), mask_vreg_ty,
             ValueRange{boundIdxConst(0), boundIdxConst(0)},
             ValueRange{boundIdxConst(target_shape[0]),
                        boundIdxConst(col_diff)});

@@ -927,8 +927,8 @@ def select_tiles_from_rotated_row_vregs(
 
   i1 = ir.IntegerType.get_signless(1)
   mask_vreg_ty = (
-      ir.VectorType.get((*TARGET_SHAPE, 2), i1)
-      if dst_layout.packing == 2
+      ir.VectorType.get((*TARGET_SHAPE, dst_layout.packing), i1)
+      if dst_layout.packing > 1
       else ir.VectorType.get(TARGET_SHAPE, i1)
   )
 
@@ -1287,7 +1287,7 @@ def relayout(
   if (
       src.implicit_dim is None
       and dst.implicit_dim is None
-      and ir.BF16Type.isinstance(vty.element_type)
+      and src.bitwidth == 16
       and src.offsets == dst.offsets
       and src.tiling == (8, 128)
       and dst.tiling == (16, 128)
@@ -1301,9 +1301,13 @@ def relayout(
       src_row2 = src_tiles[(*batch_idx, src_row2_row, dst_col // 2)]
 
       vreg_part = dst_col % 2
-      vreg_f32 = ir.VectorType.get(TARGET_SHAPE, ir.F32Type.get())
-      half_row1 = tpu.UnpackSubelementsOp(vreg_f32, src_row1, vreg_part)
-      half_row2 = tpu.UnpackSubelementsOp(vreg_f32, src_row2, vreg_part)
+      if ir.IntegerType.isinstance(vty.element_type):
+        unpacked_ty = ir.IntegerType.get_signless(32)
+      else:
+        unpacked_ty = ir.F32Type.get()
+      vreg_x32 = ir.VectorType.get(TARGET_SHAPE, unpacked_ty)
+      half_row1 = tpu.UnpackSubelementsOp(vreg_x32, src_row1, vreg_part)
+      half_row2 = tpu.UnpackSubelementsOp(vreg_x32, src_row2, vreg_part)
       src_tiles_retiled[(*batch_idx, dst_row, dst_col)] = tpu.PackSubelementsOp(
           src_row1.type, [half_row1, half_row2]
       )
@@ -1423,9 +1427,16 @@ def relayout(
       sublane_diff_attr = ir.IntegerAttr.get(
           ir.IntegerType.get_signed(32), sublane_diff
       )
+      mask_vreg_ty = (
+          ir.VectorType.get(
+              (*TARGET_SHAPE, packing), ir.IntegerType.get_signless(1)
+          )
+          if packing > 1
+          else ir.VectorType.get(TARGET_SHAPE, ir.IntegerType.get_signless(1))
+      )
       if src_tiles.shape[-1] > 1:
         mask = tpu.CreateMaskOp(
-            ir.VectorType.get(TARGET_SHAPE, ir.IntegerType.get_signless(1)),
+            mask_vreg_ty,
             low=list(map(ix_cst, [0, 0])),
             high=list(map(ix_cst, [TARGET_SHAPE[0], col_diff])))
       for idx, tile in np.ndenumerate(src_tiles):

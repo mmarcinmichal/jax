@@ -76,6 +76,11 @@ logger = logging.getLogger(__name__)
 # compilation_cache.reset_cache() is called.
 _cache_used: bool = False
 
+# This variable captures whether a process has ever disabled cache. It will be
+# set to true only once, regardless of how many times compile_or_get_cached() is
+# called or jax_enable_compilation_cache flag is set to False.
+_cache_disabled: bool = False
+
 
 # Will be monkeypatched with the function that gets the XLA-AutoFDO profile
 # version. The default (-1) takes care of errors.
@@ -296,6 +301,12 @@ def compile_or_get_cached(
     supported_platforms.append("cpu")
   use_compilation_cache = (compilation_cache.is_initialized() and
                            backend.platform in supported_platforms)
+
+  if not config.enable_compilation_cache.value:
+    global _cache_disabled
+    if not _cache_disabled:
+      _cache_disabled = True
+      monitoring.record_event('/jax/compilation_cache/tasks_disable_cache')
 
   if not use_compilation_cache:
     return backend_compile(backend, computation, compile_options,

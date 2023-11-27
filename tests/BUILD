@@ -146,7 +146,7 @@ jax_test(
 jax_test(
     name = "lobpcg_test",
     srcs = ["lobpcg_test.py"],
-    env = {"LOBPCG_EMIT_DEBUG_PLOTS": "0"},
+    env = {"LOBPCG_EMIT_DEBUG_PLOTS": "1"},
     shard_count = {
         "cpu": 48,
         "gpu": 48,

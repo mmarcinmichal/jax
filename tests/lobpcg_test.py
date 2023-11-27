@@ -275,9 +275,6 @@ class LobpcgTest(jtu.JaxTestCase):
     if not os.getenv('LOBPCG_EMIT_DEBUG_PLOTS'):
       return
 
-    if os.getenv('LOBPCG_EMIT_DEBUG_PLOTS') == "0":
-      return
-
     if isinstance(A, (np.ndarray, jax.Array)):
       lobpcg = linalg._lobpcg_standard_matrix
     else:

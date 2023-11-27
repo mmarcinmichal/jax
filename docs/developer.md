@@ -191,7 +191,6 @@ First, install the dependencies by running `pip install -r build/test-requiremen
 There are two supported mechanisms for running the JAX tests, either using Bazel
 or using pytest.
 
-
 ### Using Bazel
 
 First, configure the JAX build by running:
